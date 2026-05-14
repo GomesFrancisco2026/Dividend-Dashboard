@@ -276,12 +276,20 @@ def load_unified_dashboard():
     merged_df = pd.merge(df, live_df, on="Ticker", how="left")
     
     # --- API SILENT FAILURE SAFETY NET ---
+    # Ensure all expected API columns exist so the app doesn't crash when Yahoo is down
+    for c in ['Display Ticker', 'Asset Class', 'Exchange Multiplier', 'Live Price (CAD)', 'Div Per Share (CAD)', 'Trailing Yield', 'EPS (CAD)', 'TTM Div (CAD)', 'Sector', 'Country', 'Factor']:
+        if c not in merged_df.columns:
+            merged_df[c] = np.nan
+
     merged_df['Display Ticker'] = merged_df['Display Ticker'].fillna("⚠️ " + merged_df['Ticker'])
     merged_df['Asset Class'] = merged_df['Asset Class'].fillna("Stock") 
     merged_df['Exchange Multiplier'] = merged_df['Exchange Multiplier'].fillna(1.0)
+    merged_df['Sector'] = merged_df['Sector'].fillna("Unknown")
+    merged_df['Country'] = merged_df['Country'].fillna("Unknown")
+    merged_df['Factor'] = merged_df['Factor'].fillna("Unknown")
+    
     for col in ['Live Price (CAD)', 'Div Per Share (CAD)', 'Trailing Yield', 'EPS (CAD)', 'TTM Div (CAD)']:
-        if col in merged_df.columns:
-            merged_df[col] = merged_df[col].fillna(0.0)
+        merged_df[col] = merged_df[col].fillna(0.0)
     
     if not fund_df.empty and 'Ticker' in fund_df.columns:
         fund_df['Ticker'] = fund_df['Ticker'].astype(str).str.upper().str.strip()
