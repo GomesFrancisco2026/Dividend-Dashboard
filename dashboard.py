@@ -24,17 +24,17 @@ with col_btn:
 st.markdown("### Tracking progress toward the $3,000 - $4,500 CAD monthly passive income goal.")
 st.divider()
 
-# --- CSS OVERRIDE: AGGRESSIVE TAB FONT SCALING ---
+# --- CSS OVERRIDE: MOBILE OPTIMIZED TAB FONT SCALING ---
 st.markdown("""
 <style>
-    /* Force Streamlit tabs to adopt a massive, bold h3-style font */
+    /* Force Streamlit tabs to adopt a clean, mobile-friendly font */
     div[data-testid="stTabs"] button {
-        font-size: 22px !important;
+        font-size: 16px !important;
         font-weight: 600 !important;
     }
     div[data-testid="stTabs"] button p,
     div[data-testid="stTabs"] button span {
-        font-size: 22px !important;
+        font-size: 16px !important;
         font-weight: 600 !important;
     }
 </style>
@@ -75,13 +75,12 @@ def load_ledger_data():
         fund_df = pd.DataFrame()
         try: 
             fund_sheet = gc.open("PortfolioData").worksheet("Fund_Data")
-            # THE FIX: Raw value scraper. Immune to blank columns and Google Sheet formatting errors.
             raw_fund = fund_sheet.get_all_values()
             if len(raw_fund) > 1:
                 fund_df = pd.DataFrame(raw_fund[1:], columns=raw_fund[0])
                 fund_df.columns = fund_df.columns.astype(str).str.strip()
-                fund_df = fund_df.loc[:, fund_df.columns != ''] # Drop phantom blank columns
-                fund_df = fund_df.replace(r'^\s*$', np.nan, regex=True) # Force empty cells to NaN
+                fund_df = fund_df.loc[:, fund_df.columns != '']
+                fund_df = fund_df.replace(r'^\s*$', np.nan, regex=True)
         except Exception as e: 
             st.sidebar.error(f"Fund_Data Read Error: {e}")
             pass 
@@ -207,9 +206,9 @@ def calculate_cagrs(hist_df, tickers):
                 if past_price > 0:
                     years = months / 12
                     cagr = ((current_price / past_price) ** (1 / years)) - 1
-                    ticker_cagrs[label] = f"{cagr * 100:.2f}%"
-                else: ticker_cagrs[label] = "N/A"
-            else: ticker_cagrs[label] = "N/A"
+                    ticker_cagrs[label] = cagr * 100
+                else: ticker_cagrs[label] = np.nan
+            else: ticker_cagrs[label] = np.nan
         cagr_data.append(ticker_cagrs)
     return pd.DataFrame(cagr_data)
 
@@ -269,6 +268,11 @@ def load_unified_dashboard():
         
     tickers = df['Ticker'].unique().tolist()
     live_df = fetch_live_data(tickers)
+    
+    # Guarantee the Ticker column exists even if Yahoo Finance drops the connection
+    if live_df.empty:
+        live_df = pd.DataFrame({"Ticker": tickers})
+        
     merged_df = pd.merge(df, live_df, on="Ticker", how="left")
     
     # --- API SILENT FAILURE SAFETY NET ---
@@ -280,10 +284,7 @@ def load_unified_dashboard():
             merged_df[col] = merged_df[col].fillna(0.0)
     
     if not fund_df.empty and 'Ticker' in fund_df.columns:
-        # Strip invisible spaces from the ticker column in Google Sheets
         fund_df['Ticker'] = fund_df['Ticker'].astype(str).str.upper().str.strip()
-        
-        # Ensure fund_df has unique tickers to prevent row multiplication during merge
         fund_df_unique = fund_df.drop_duplicates(subset=['Ticker'], keep='last')
         
         if 'MER' in fund_df_unique.columns:
@@ -299,7 +300,7 @@ def load_unified_dashboard():
         if 'Payout_Months' in fund_df_unique.columns:
             merged_df = pd.merge(merged_df, fund_df_unique[['Ticker', 'Payout_Months']], on="Ticker", how="left")
             
-        # USER OVERRIDE ENGINE: Bulletproof masking against invisible spaces and empty Pandas strings
+        # USER OVERRIDE ENGINE
         if 'Sector' in fund_df_unique.columns:
             merged_df = pd.merge(merged_df, fund_df_unique[['Ticker', 'Sector']].rename(columns={'Sector': 'Manual_Sector'}), on="Ticker", how="left")
             invalid_mask = merged_df['Manual_Sector'].astype(str).str.strip().isin(['', 'nan', 'None', 'NaN', '<NA>'])
@@ -320,11 +321,8 @@ def load_unified_dashboard():
     merged_df['Market Value (CAD)'] = merged_df['Shares'] * merged_df['Live Price (CAD)']
     merged_df['Total Unrealized Gain (CAD)'] = merged_df['Market Value (CAD)'] - merged_df['Total Cost (CAD)']
     
-    # Force data types to pure numeric to prevent string multiplication errors
     clean_yield = pd.to_numeric(merged_df['Trailing Yield'].astype(str).str.replace('%', '', regex=False), errors='coerce').fillna(0)
     clean_div = pd.to_numeric(merged_df['Div Per Share (CAD)'], errors='coerce').fillna(0)
-    
-    # Auto-adjust yield if it was written as a whole percentage (e.g. 4.5 instead of 0.045)
     clean_yield = np.where(clean_yield > 1, clean_yield / 100, clean_yield)
 
     merged_df['Annual Dividend (CAD)'] = np.where(
@@ -388,6 +386,8 @@ def load_unified_dashboard():
         gain_color = "#2ca02c" if total_unrealized_gain >= 0 else "#ff6666"
         gain_sign = "+" if total_unrealized_gain >= 0 else "-"
         st.markdown(f"### Market Data & Valuation &nbsp;&nbsp;|&nbsp;&nbsp; <span style='color:{gain_color};'>Unrealized Gain: {gain_sign}${abs(total_unrealized_gain):,.2f}</span>", unsafe_allow_html=True)
+        
+        # Grid naturally stacks on mobile
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Available Cash", f"${available_cash:,.2f}")
         col2.metric("Total Invested", f"${total_cost:,.2f}")
@@ -406,15 +406,12 @@ def load_unified_dashboard():
             st.warning("⚠️ Waiting for Payout_Months data to sync from Google Sheets...")
             merged_df['Payout_Months'] = 'ALL' 
             
-        # Determine Top 5 Dividend Payers
         top_payers = merged_df.groupby('Display Ticker')['Annual Dividend (CAD)'].sum().nlargest(5).index.tolist()
             
         for _, row in merged_df.iterrows():
             raw_ticker = row['Display Ticker']
-            # Group smaller assets into "Others"
             ticker = raw_ticker if raw_ticker in top_payers else "Others"
-            
-            payout_str = str(row['Payout_Months']).strip().upper()
+            payout_str = str(row.get('Payout_Months', 'ALL')).strip().upper()
             cash_per_payout = row.get('Cash Per Payout (CAD)', 0.0)
             
             if pd.isna(cash_per_payout) or cash_per_payout <= 0 or payout_str == 'NA' or payout_str == 'NAN':
@@ -440,7 +437,6 @@ def load_unified_dashboard():
                     
         if cal_data:
             cal_df = pd.DataFrame(cal_data)
-            # Aggregate to merge all 'Others' into a single clean block per month
             cal_df = cal_df.groupby(['Month_Num', 'Month', 'Ticker'])['Income (CAD)'].sum().reset_index()
             
             total_per_month = cal_df.groupby("Month_Num")["Income (CAD)"].sum().reset_index()
@@ -461,10 +457,11 @@ def load_unified_dashboard():
                     font=dict(size=14, color="#54A87A")
                 )
             
+            # Mobile Optimization: Legend horizontally at the bottom
             fig_cal.update_layout(
-                margin=dict(t=40, b=10, l=10, r=10), 
+                margin=dict(t=40, b=50, l=10, r=10), 
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                legend=dict(title="Top Payers", orientation="v", yanchor="top", y=1, xanchor="left", x=1.02, font=dict(size=12)),
+                legend=dict(title="Top Payers", orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=12)),
                 xaxis=dict(categoryorder='array', categoryarray=list(month_names.values()), tickfont=dict(size=14, weight="bold")),
                 yaxis=dict(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickformat="$,.0f"),
                 hovermode="closest", height=500
@@ -526,13 +523,21 @@ def load_unified_dashboard():
                 if pd.isna(x) or type(x) == str: return "" if pd.isna(x) else x
                 return f"$({abs(x):,.2f})" if x < 0 else f"${x:,.2f}"
 
+            # Build a formatting dictionary to paint the UI without touching the math
+            format_dict = {}
             for c in disp_df.columns:
-                if 'Shares' in c: disp_df[c] = disp_df[c].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) and type(x) != str else ("" if pd.isna(x) else x))
-                elif any(k in c for k in ['Yield', 'Weight', 'Payout', 'MER']): disp_df[c] = disp_df[c].apply(lambda x: fmt_pct(x, c))
-                elif any(k in c for k in ['Cost', 'Price', 'Value', 'Gain', 'Dividend', 'EPS', 'TTM', 'FCF']): disp_df[c] = disp_df[c].apply(fmt_curr)
-                elif any(k in c for k in ['P/E', 'M-Cap', 'AUM', 'Beta']): disp_df[c] = disp_df[c].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and type(x) != str else ("" if pd.isna(x) else x))
-                else: disp_df[c] = disp_df[c].fillna("") 
-                    
+                if 'Shares' in c: 
+                    format_dict[c] = lambda x: f"{x:,.1f}" if pd.notnull(x) and type(x) != str else x
+                elif any(k in c for k in ['Yield', 'Weight', 'Payout', 'MER', 'CAGR']): 
+                    format_dict[c] = lambda x, col=c: fmt_pct(x, col)
+                elif any(k in c for k in ['Cost', 'Price', 'Value', 'Gain', 'Dividend', 'EPS', 'TTM', 'FCF']): 
+                    format_dict[c] = fmt_curr
+                elif any(k in c for k in ['P/E', 'M-Cap', 'AUM', 'Beta']): 
+                    format_dict[c] = lambda x: f"{x:,.2f}" if pd.notnull(x) and type(x) != str else x
+
+            # Keep text cells clean
+            disp_df = disp_df.fillna("")
+
             disp_df.set_index(['Row', ticker_col_name], inplace=True)
             
             def style_cells(row):
@@ -540,7 +545,8 @@ def load_unified_dashboard():
                 color = 'background-color: rgba(255,0,0,0.1); color: #ff6666;' if '🔴' in t_val else 'background-color: rgba(0,128,0,0.15); color: #85e085;' if '🟢' in t_val else 'background-color: rgba(0,0,255,0.15); color: #85c2ff;' if '🔵' in t_val else ''
                 return [f"{color if c == ticker_col_name else ''} font-weight: bold;" if (is_total or c == ticker_col_name) else "" for c in row.index]
             
-            styled_df = disp_df.style.apply(style_cells, axis=1).set_table_styles([{'selector': 'th', 'props': [('font-weight', 'bold')]}])
+            # Apply all formatting purely at the display layer
+            styled_df = disp_df.style.apply(style_cells, axis=1).format(format_dict).set_table_styles([{'selector': 'th', 'props': [('font-weight', 'bold')]}])
             st.dataframe(styled_df, use_container_width=True)
 
         render_table("Unified Portfolio Holdings", merged_df)
@@ -611,14 +617,15 @@ def load_unified_dashboard():
             c1, c2 = st.columns(2)
             with c1: 
                 fig_pie = px.pie(data_sorted, values=val_col, names=name_col, hole=0.4, color=name_col if color_map else None, color_discrete_map=color_map)
+                # Mobile Optimization: Bottom legend for Pie Charts
                 fig_pie.update_traces(hovertemplate="<b>%{label}</b><br>" + y_axis_label + ": $%{value:,.0f}<br>Weight: %{percent}<extra></extra>")
-                fig_pie.update_layout(margin=dict(t=10, b=10, l=10, r=10), font=dict(size=18), hoverlabel=dict(font_size=20), legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5, font=dict(size=16)))
+                fig_pie.update_layout(margin=dict(t=10, b=50, l=10, r=10), font=dict(size=14), hoverlabel=dict(font_size=16), legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=12)))
                 st.plotly_chart(fig_pie, use_container_width=True)
                 
             with c2: 
                 fig_bar = px.bar(data_sorted, x=name_col, y=val_col, color=name_col, color_discrete_map=color_map)
                 fig_bar.update_traces(hovertemplate="<b>%{x}</b><br>" + y_axis_label + ": $%{y:,.0f}<extra></extra>")
-                fig_bar.update_layout(margin=dict(t=10, b=10, l=10, r=10), xaxis_title="", yaxis_title="", showlegend=False, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font=dict(size=18), hoverlabel=dict(font_size=20))
+                fig_bar.update_layout(margin=dict(t=10, b=10, l=10, r=10), xaxis_title="", yaxis_title="", showlegend=False, plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font=dict(size=14), hoverlabel=dict(font_size=16))
                 fig_bar.update_yaxes(showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickformat="$,.0f")
                 fig_bar.update_xaxes(showgrid=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
@@ -629,7 +636,7 @@ def load_unified_dashboard():
         render_chart_pair("2. Geographic Exposure", geo_df, "Country", "Market Value (CAD)", "Market Value")
         render_chart_pair("3. Sector Exposure (Capital)", sec_cap_df, "Sector", "Market Value (CAD)", "Market Value")
         render_chart_pair("4. Sector Contribution (Income)", sec_inc_df, "Sector", "Annual Dividend (CAD)", "Annual Dividend")
-        render_chart_pair("5. Factor Exposure", fac_df, "Factor", "Market Value (CAD)", "Market Value")    
+        render_chart_pair("5. Factor Exposure", fac_df, "Factor", "Market Value (CAD)", "Market Value")   
 
     # --- TAB 3: GAP ANALYSIS ---
     with tabs[2]:
@@ -736,16 +743,17 @@ def load_unified_dashboard():
         fig_proj.add_trace(go.Scatter(x=proj_df["Year"], y=proj_df["Target Max ($4,500)"], mode='lines', line=dict(width=0), showlegend=False, yaxis="y2", hoverinfo='skip'))
         fig_proj.add_trace(go.Scatter(x=proj_df["Year"], y=proj_df["Target Min ($3,000)"], mode='lines', fill='tonexty', fillcolor='rgba(255, 215, 0, 0.2)', line=dict(width=0), name="Goal Zone", yaxis="y2"))
         
+        # Mobile Optimization: Horizontal legend for Projection
         fig_proj.update_layout(
-            margin=dict(t=20, b=10, l=10, r=10),
+            margin=dict(t=20, b=50, l=10, r=10),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", 
-            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5, font=dict(size=18)), 
-            yaxis=dict(title="Value ($)", side="left", showgrid=False, tickformat="$,.0f", title_font=dict(size=20, weight="bold"), tickfont=dict(size=16)), 
-            yaxis2=dict(title="Div ($/mo)", side="right", overlaying="y", showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickformat="$,.0f", title_font=dict(size=20, weight="bold"), tickfont=dict(size=16)), 
-            hovermode="x unified", hoverlabel=dict(font_size=24), height=550
+            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5, font=dict(size=14)), 
+            yaxis=dict(title="Value ($)", side="left", showgrid=False, tickformat="$,.0f", title_font=dict(size=16, weight="bold"), tickfont=dict(size=14)), 
+            yaxis2=dict(title="Div ($/mo)", side="right", overlaying="y", showgrid=True, gridcolor='rgba(128,128,128,0.2)', tickformat="$,.0f", title_font=dict(size=16, weight="bold"), tickfont=dict(size=14)), 
+            hovermode="x unified", hoverlabel=dict(font_size=16), height=550
         )
         
-        fig_proj.update_xaxes(tickmode='linear', dtick=1, tickfont=dict(size=16, weight="bold"))
+        fig_proj.update_xaxes(tickmode='linear', dtick=1, tickfont=dict(size=14, weight="bold"))
         
         st.plotly_chart(fig_proj, use_container_width=True)
         st.divider()
@@ -765,11 +773,11 @@ def load_unified_dashboard():
         
         styled_table = expanded_df.style.format(format_dict).hide(axis="index").set_properties(**{
             'text-align': 'left',
-            'font-size': '22px'
+            'font-size': '16px' # Mobile optimized
         }).set_table_styles([
             dict(selector='th', props=[
                 ('text-align', 'left'), 
-                ('font-size', '22px'),
+                ('font-size', '16px'), # Mobile optimized
                 ('background-color', '#1e1e1e'),
                 ('color', 'white'),
                 ('font-weight', '900')
@@ -786,8 +794,9 @@ def load_unified_dashboard():
         st.markdown("#### Allocation by Weight (Pie Chart)")
         
         fig_pie = px.pie(alloc_df, values='Market Value (CAD)', names='Ticker', hole=0.4)
+        # Mobile Optimization: Bottom legend for Pie Charts
         fig_pie.update_traces(textinfo='label+percent', textposition='inside', hovertemplate="<b>%{label}</b><br>Value: $%{value:,.2f}<br>Weight: %{percent}<extra></extra>")
-        fig_pie.update_layout(margin=dict(t=10, b=30, l=10, r=10), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font=dict(size=14), showlegend=True)
+        fig_pie.update_layout(margin=dict(t=10, b=50, l=10, r=10), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", font=dict(size=14), legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=12)))
         st.plotly_chart(fig_pie, use_container_width=True)
         
         st.divider()
@@ -844,21 +853,22 @@ def load_unified_dashboard():
                 range_color=[-max_abs_gain, max_abs_gain],
                 custom_data=['Center_Text', 'Text_Color']
             )
+            # Mobile Optimization: Font size scaled down to 16 for better fit in small tiles
             fig_tree.update_traces(
                 texttemplate='<span style="color:%{customdata[1]}"><b>%{label}</b><br>%{customdata[0]}</span>',
                 textposition="middle center",
-                textfont=dict(size=22), 
+                textfont=dict(size=16), 
                 hovertemplate="<b>%{label}</b><br>Value: $%{value:,.2f}<br>" + selected_metric + ": %{color:.2f}%<extra></extra>",
-                marker=dict(line=dict(width=4, color='white')),
-                hoverlabel=dict(bgcolor='rgba(0,0,0,0.9)', font_size=28, font_color='#FFFFE0') 
+                marker=dict(line=dict(width=2, color='white')),
+                hoverlabel=dict(bgcolor='rgba(0,0,0,0.9)', font_size=20, font_color='#FFFFE0') 
             )
             fig_tree.update_layout(
                 margin=dict(t=10, b=10, l=10, r=10),
                 paper_bgcolor="rgba(255, 255, 255, 0.08)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(size=18, color="white"),
-                coloraxis_colorbar=dict(title=dict(text="Gain (%)", font=dict(size=20)), tickfont=dict(size=18)), 
-                height=800 
+                font=dict(size=14, color="white"),
+                coloraxis_colorbar=dict(title=dict(text="Gain (%)", font=dict(size=14)), tickfont=dict(size=12)), 
+                height=600 
             )
             st.plotly_chart(fig_tree, use_container_width=True)
         else:
@@ -940,7 +950,8 @@ def load_unified_dashboard():
                     
                     fig.add_trace(go.Scatter(x=y_data.index, y=y_data, mode='lines', name=col, line=dict(width=3, color=l_color, dash=l_dash)))
                 
-                fig.update_layout(margin=dict(t=10,b=10,l=10,r=10), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5, font=dict(size=16)), yaxis=dict(title=y_lab, tickformat=f, title_font=dict(size=18, weight="bold"), tickfont=dict(size=14), showgrid=True, gridcolor='rgba(128,128,128,0.2)'), hovermode="x unified", hoverlabel=dict(font_size=20), height=550)
+                # Mobile Optimization: Bottom legend
+                fig.update_layout(margin=dict(t=10,b=50,l=10,r=10), plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=12)), yaxis=dict(title=y_lab, tickformat=f, title_font=dict(size=14, weight="bold"), tickfont=dict(size=12), showgrid=True, gridcolor='rgba(128,128,128,0.2)'), hovermode="x unified", hoverlabel=dict(font_size=16), height=550)
                 if comp_metric == "Raw Price ($)" and use_log: fig.update_yaxes(type="log", tickformat="$,.0f")
                 st.plotly_chart(fig, use_container_width=True)
                 if warns and comp_metric == "Drawdown (%)": st.warning("\n".join(warns))
@@ -1027,19 +1038,20 @@ def load_unified_dashboard():
                             fig.add_trace(go.Scatter(x=time_axis, y=med_curr, mode='lines', line=dict(color=BASE_PALETTE[0], width=3, dash='dash'), name='Current')) 
                             fig.add_trace(go.Scatter(x=time_axis, y=med_prop, mode='lines', line=dict(color=BASE_PALETTE[1], width=3), name='Proposed')) 
                             
-                            fig.update_layout(title="Phase Space Projection (2026 - 2038)", xaxis_title="Timeline (Years)", yaxis_title="Portfolio Value (CAD)", yaxis_tickformat="$,.0f", hovermode="x unified", margin=dict(l=0, r=0, t=40, b=0))
+                            # Mobile Optimization: Bottom legend
+                            fig.update_layout(title="Phase Space Projection (2026 - 2038)", xaxis_title="Timeline (Years)", yaxis_title="Portfolio Value (CAD)", yaxis_tickformat="$,.0f", hovermode="x unified", margin=dict(l=0, r=0, t=40, b=50), legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5, font=dict(size=12)))
                             st.plotly_chart(fig, use_container_width=True)
 
-                            st.divider()
-                            m1, m2, m3 = st.columns(3)
-                            inc_curr, inc_prop = np.round((med_curr[-1]*0.04)/12), np.round((med_prop[-1]*0.04)/12)
-                            with m1: st.markdown(f"**CURRENT TRAJECTORY**\n* Contrib: **${curr_cont}/mo**\n* Volatility: **{sig_curr*100:.2f}%**\n* Monthly Divid: **${inc_curr:,.0f}**")
-                            with m2: st.markdown(f"**PROPOSED TRAJECTORY**\n* Contrib: **${prop_cont}/mo**\n* Volatility: **{sig_prop*100:.2f}%**\n* Monthly Divid: **${inc_prop:,.0f}**")
-                            with m3:
-                                delta = inc_prop - inc_curr
-                                if inc_prop >= 3000: st.success(f"STATUS: TARGET REACHED\n\nShift: +${delta:,.0f} /mo")
-                                elif delta > 0: st.info(f"STATUS: OPTIMIZED\n\nShift: +${delta:,.0f} /mo")
-                                else: st.warning("STATUS: NEUTRAL")
+                        st.divider()
+                        m1, m2, m3 = st.columns(3)
+                        inc_curr, inc_prop = np.round((med_curr[-1]*0.04)/12), np.round((med_prop[-1]*0.04)/12)
+                        with m1: st.markdown(f"**CURRENT TRAJECTORY**\n* Contrib: **${curr_cont}/mo**\n* Volatility: **{sig_curr*100:.2f}%**\n* Monthly Divid: **${inc_curr:,.0f}**")
+                        with m2: st.markdown(f"**PROPOSED TRAJECTORY**\n* Contrib: **${prop_cont}/mo**\n* Volatility: **{sig_prop*100:.2f}%**\n* Monthly Divid: **${inc_prop:,.0f}**")
+                        with m3:
+                            delta = inc_prop - inc_curr
+                            if inc_prop >= 3000: st.success(f"STATUS: TARGET REACHED\n\nShift: +${delta:,.0f} /mo")
+                            elif delta > 0: st.info(f"STATUS: OPTIMIZED\n\nShift: +${delta:,.0f} /mo")
+                            else: st.warning("STATUS: NEUTRAL")
                                 
     # --- TAB 9: PERFORMANCE AUDIT (IRR) ---
     with tabs[8]:
